@@ -1,0 +1,13 @@
+# BOOST PRO PC Doctor - read-only Windows diagnostic collector
+[CmdletBinding()] param([string]$OutputPath = "$env:USERPROFILE\Desktop\PCDoctor-Report.json")
+$ErrorActionPreference='SilentlyContinue'
+$os=Get-CimInstance Win32_OperatingSystem;$cs=Get-CimInstance Win32_ComputerSystem;$cpu=Get-CimInstance Win32_Processor|Select-Object -First 1
+$gpu=Get-CimInstance Win32_VideoController|Where-Object {$_.Name -notmatch 'Microsoft Basic'}|Select-Object -First 1
+$ramTotal=[math]::Round($cs.TotalPhysicalMemory/1GB,1);$ramUsed=if($cs.TotalPhysicalMemory){[math]::Round((1-($os.FreePhysicalMemory*1KB/$cs.TotalPhysicalMemory))*100,1)}
+$disks=Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"|ForEach-Object{[pscustomobject]@{name=$_.DeviceID;size_gb=[math]::Round($_.Size/1GB,1);free_gb=[math]::Round($_.FreeSpace/1GB,1);free_percent=if($_.Size){[math]::Round($_.FreeSpace/$_.Size*100,1)}}}
+$net=Get-NetIPConfiguration|Where-Object {$_.IPv4Address -and $_.NetAdapter.Status -eq 'Up'}|Select-Object -First 1;$adapter=if($net){Get-NetAdapter -Name $net.InterfaceAlias}
+$events=@();Get-WinEvent -FilterHashtable @{LogName='System';Level=1,2;StartTime=(Get-Date).AddDays(-7)} -MaxEvents 30|ForEach-Object{$events+=[pscustomobject]@{time=$_.TimeCreated.ToString('s');provider=$_.ProviderName;id=$_.Id;message=$_.Message.Substring(0,[math]::Min(220,$_.Message.Length))}}
+$drivers=@();Get-CimInstance Win32_PnPSignedDriver|Where-Object {$_.DeviceName -and $_.DriverVersion}|Select-Object -First 80|ForEach-Object{$drivers+=[pscustomobject]@{device=$_.DeviceName;version=$_.DriverVersion;provider=$_.DriverProviderName}}
+$page=Get-CimInstance Win32_PageFileUsage|Select-Object Name,AllocatedBaseSize,CurrentUsage,PeakUsage
+[ordered]@{schema_version='1.0';hostname=$env:COMPUTERNAME;collected_at=(Get-Date).ToString('o');os=[ordered]@{caption=$os.Caption;build=$os.BuildNumber;version=$os.Version;uptime=((Get-Date)-$os.LastBootUpTime).ToString('d\.hh\:mm')};cpu=[ordered]@{name=$cpu.Name;cores=$cpu.NumberOfCores;logical=$cpu.NumberOfLogicalProcessors;max_mhz=$cpu.MaxClockSpeed};gpu=[ordered]@{name=$gpu.Name;driver=$gpu.DriverVersion;vram_mb=$gpu.AdapterRAM};ram=[ordered]@{total_gb=$ramTotal;used_percent=$ramUsed};disks=$disks;network=[ordered]@{adapter=if($adapter){$adapter.InterfaceDescription};ipv4=if($net){$net.IPv4Address.IPAddress};gateway=if($net){$net.IPv4DefaultGateway.NextHop};link_speed=if($adapter){$adapter.LinkSpeed}};pagefile=$page;events=$events;drivers=$drivers}|ConvertTo-Json -Depth 6|Set-Content -Path $OutputPath -Encoding UTF8
+Write-Host "BOOST PRO PC Doctor report created: $OutputPath" -ForegroundColor Cyan
